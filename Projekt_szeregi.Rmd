@@ -1,0 +1,334 @@
+---
+title: "Projekt"
+author: "Zuzanna Kozyra, Michał Łysakowski"
+date: "2024-01-23"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Dane
+
+Dane zostały pobrane z yahoo. Dotyczą cen bitcoina i etherium w dolarach od 2020-01-01 do 2023-12-31.
+
+```{r warning=FALSE, message=FALSE}
+library(tseries)
+library(knitr)
+library(tidyverse)
+library(moments)
+library(lmtest)
+library(forecast)
+library(nortest)
+
+BTC <- get.hist.quote(instrument = "BTC-USD", start = "2020-01-01", 
+                             end = "2023-12-31", quote = "Close", provider = "yahoo")
+ETH <- get.hist.quote(instrument = "ETH-USD", start = "2020-01-01", 
+                             end = "2023-12-31", quote = "Close", provider = "yahoo")
+
+kable(head(BTC))
+kable(head(ETH))
+```
+
+## Braki danych
+
+```{r}
+sum(is.na(BTC))
+sum(is.na(ETH))
+```
+Nie ma braków danych.
+
+## Podstawowe statystyki opisowe
+```{r}
+btc_summary <- summary(BTC)
+kable(data.frame("BTC" = btc_summary[,2]))
+```
+```{r}
+eth_summary <- summary(ETH)
+kable(data.frame("ETH" = eth_summary[,2]))
+```
+
+## Normalność danych
+
+$H_0$: dane mają rozkład normalny
+
+```{r}
+btc_lillie <- lillie.test(BTC)
+eth_lillie <- lillie.test(ETH)
+btc_ad <- ad.test(BTC)
+eth_ad <- ad.test(ETH)
+
+normality <- matrix(c(btc_lillie$p.value, eth_lillie$p.value, btc_ad$p.value, eth_ad$p.value), ncol = 2, byrow = T)
+normality <- data.frame(normality)
+colnames(normality) <- c("BTC", "ETH")
+rownames(normality) <- c("Lilliefors", "Anderson - Darling")
+kable(normality, digits = c(100, 100))
+```
+Na podstawie testów Lillieforsa i Andersona - Darlinga odrzucamy hipotezę zerową o normalności zmiennych `BTC` i `ETH`. zmienne mają rozkład inny niż normalny.
+
+## Skośność i kurtoza
+
+```{r}
+btc_skew <- skewness(BTC)
+eth_skew <- skewness(ETH)
+btc_kurt <- kurtosis(BTC)
+eth_kurt <- kurtosis(ETH)
+
+skew_kurt <- matrix(c(btc_kurt, eth_kurt, btc_skew, eth_skew), ncol = 2, byrow = T)
+skew_kurt <- data.frame(skew_kurt)
+colnames(skew_kurt) <- c("BTC", "ETH")
+rownames(skew_kurt) <- c("Kurtoza", "Skośność")
+kable(skew_kurt)
+```
+
+Obydwie zmienne mają współczynnik asymetrii większy od zera, więc mają rozkład asymetryczny o asymetrii prawostronnej - dominują jednostki w zbiorowosci o wartościach cechy niższych od średniej arytmetycznej.
+
+Współczynnik koncentracji obydwu zmiennych jest mniejszy od trzech, więc ich rozkład jest spłaszczony, tzn. koncentracja jednostek zbiorowości pod względem badanej cechy wokół średniej jest słabsza od rozkładu normalnego.
+
+```{r}
+boxplot(BTC, col = "skyblue", main = "Wykres ramka - wąsy BTC", horizontal = TRUE)
+```
+```{r}
+boxplot(ETH, col = "seagreen", main = "Wykres ramka - wąsy ETH", horizontal = TRUE)
+```
+
+
+Histogramy
+
+```{r}
+options(scipen = 10)
+hist(BTC, col = "skyblue", xlab = "Cena, USD", ylab = "Prawdopodobieństwo", main = "Histogram cen bitcoina", prob=TRUE)
+gestosc <- density(BTC)
+lines(x=gestosc$x, y=gestosc$y, col="red", lwd=2)
+```
+
+```{r}
+options(scipen = 10)
+hist(ETH, col = "seagreen", xlab = "Cena, USD", ylab = "Prawdopodobieństwo", main = "Histogram cen etherium", prob=TRUE)
+gestosc <- density(ETH)
+lines(x=gestosc$x, y=gestosc$y, col="red", lwd=2)
+```
+
+
+## Różnice
+
+```{r}
+cenaBTC <- BTC$Close
+cenaETH <- ETH$Close
+```
+
+
+```{r}
+plot(diff(cenaBTC,differences = 1),main = 'Różnice 1 stopnia dla BTC',
+     col="skyblue",type='l',lwd=2)
+abline(h=mean(diff(cenaBTC,differences=1)),col=1)
+```
+
+Na podstawie różnic pierwszego stopnia dla `BTC` widać, że na wraz z początkiem pandemii w 2020 roku ceny bitcoina spadły. Między rokiem 2021 a 2023 widoczne są duże wahania cen, które nastęnie się stabilizują.
+
+```{r}
+plot(diff(cenaETH,differences = 1),main = 'Różnice 1 stopnia dla ETH',
+     col="seagreen",type='l',lwd=2)
+abline(h=mean(diff(cenaETH,differences=1)),col=1)
+```
+Dla zmiennej `ETH` również między rokiem 2021 a 2023 widoczne są duże wahania cen.
+
+## Dopasowanie funkcji wielomianem stopnia od pierwszego do szóstego
+
+```{r}
+wynik <- function(szereg, stopien){
+  t <- 1:length(szereg)
+  macierz <- NULL
+  for(i in 1:stopien){
+    macierz <- cbind(macierz, t^i)}
+  
+  ramka <- data.frame(szereg, macierz)
+  model <- lm(szereg~., data=ramka)
+  par(mfrow=c(1,3))
+  plot(t, szereg, type="l", 
+       main=paste("Dopasowanie wiel. st.:", stopien), 
+       ylab="USD", xlab="notowania")
+  lines(t, model$fitted.values, col=2, lwd=1.5)
+  
+  plot(t, model$residuals, main="reszty", type="l")
+  abline(h=0, col=2, lwd=2)
+  
+  plot(ecdf(model$residuals), main="dystrybuanta")
+  x <- seq(from=min(model$residuals), to=max(model$residuals), length.out=500)
+  lines(x, pnorm(x, mean=0, sd=sd(model$residuals)), col=4,  lwd=2)
+  par(mfrow=c(1,1))
+  
+  return(AIC(model))}
+```
+
+```{r}
+aic <- NULL
+for (j in 1:6) {
+  aic <- c(aic, wynik(cenaBTC, j))
+}
+i=1:6
+plot(i, aic, type="p", pch=19, main="Wartości indeksu Akaike",
+     xlab="stopień wielomianu", ylab = "wartośc indeksu", col = "skyblue")
+```
+
+Na podstawie kryterium informacyjnego Akaike można przypuszczać, że modelowanie wielomianem stopnia 5 będzie najlepszym wyborem.
+
+## Modelowanie wielomianem stopnia 5
+
+```{r}
+t_btc <- 1 : length(BTC)
+t_eth <- 1 : length(ETH)
+
+mod_btc5 <- lm(BTC ~ t_btc +I(t_btc^2)+I(t_btc^3)+I(t_btc^4) + I(t_btc^5))
+mod_eth5 <- lm(ETH ~ t_btc +I(t_btc^2)+I(t_btc^3)+I(t_btc^4) + I(t_btc^5))
+
+summary(mod_btc5)
+```
+
+Wszystkie zmienne w modelu są istotne statystycznie. Model wyjaśnia około $80\%$ zmienności zmiennej `BTC`.
+
+```{r}
+summary(mod_eth5)
+```
+
+Dla zmiennej `ETH` również wszystkie zmienne w modelu są istotne statystycznie. Model wyjaśnia około $80\%$ zmienności zmiennej `ETH`.
+
+## Ruchoma średnia oraz metoda wykładniczych wag ruchomej średniej
+
+Najpierw przedstawiamy wykresy ruuchomej średniej dla `BTC` i `ETH` w różnych oknach czasowych.
+
+```{r}
+cenaBTC <- as.numeric(cenaBTC)
+cenaETH <- as.numeric(cenaETH)
+ruchoma <- function(x,m,kolor) {
+  n <- length(x)
+  f <- NULL
+  for (i in (m+1):n){
+    f[i] <- mean(x[(i-m):(i)])
+  }
+  lines((m+1):n,f[(m+1):n],col=kolor,lwd=2)
+}
+par(mfrow = c(1, 2))
+plot(cenaBTC, main="ceny BTC",lwd=2,type="l",ylab="USD",xlab="czas")
+ruchoma(cenaBTC, 2, "skyblue")
+ruchoma(cenaBTC, 10, "red")
+ruchoma(cenaBTC, 50, "darkblue")
+legend("topleft",legend=c("m = 30","m = 90","m = 365"),col=c("skyblue","red","darkblue"),lwd=2)
+
+plot(cenaETH, main="ceny ETH",lwd=2,type="l",ylab="USD",xlab="czas")
+ruchoma(cenaETH, 2, "seagreen")
+ruchoma(cenaETH, 10, "red")
+ruchoma(cenaETH, 50, "blue")
+legend("topleft",legend=c("m = 30","m = 90","m = 365"),col=c("seagreen","red","blue"),lwd=0.5)
+```
+
+Następne wykresy pokazują metodę wykładniczych wag ruchomej średniej, w której wydobywamy więcej informacji z nowszych danych - przypisujemy im większe wagi.
+
+```{r}
+wykladnicza <- function(x,mi,kolor){
+  f <- NULL
+  f[1] <- x[1]
+  t <- length(x)
+  for(i in 2:t){
+    f[i] <- (1-mi)/(1-mi^i)*(x[i]+mi*(1-mi^(i-1))/(1-mi)*f[i-1])
+  }
+  lines(1:t,f,col=kolor,lwd=2)
+}
+
+par(mfrow = c(1, 2))
+plot(cenaBTC, main="ceny BTC",lwd=2,type="l",ylab="USD",xlab="czas")
+wykladnicza(cenaBTC, 0.5, "skyblue")
+wykladnicza(cenaBTC, 0.8, "red")
+wykladnicza(cenaBTC, 0.9, "darkblue")
+legend("topleft",legend=c("mi = 0.5","mi = 0.8","mi = 0.9"),col=c("skyblue","red","darkblue"),lwd=2)
+
+plot(cenaETH, main="ceny ETH",lwd=2,type="l",ylab="USD",xlab="czas")
+wykladnicza(cenaETH, 0.5, "seagreen")
+wykladnicza(cenaETH, 0.8, "red")
+wykladnicza(cenaETH, 0.9, "blue")
+legend("topleft",legend=c("mi = 0.5","mi = 0.8","mi = 0.9"),col=c("seagreen","red","blue"),lwd=2)
+```
+
+```{r}
+par(mfrow = c(1, 2))
+plot(t_btc,cenaBTC,main="Cena BTC",type="l",lwd=1,ylab="USD",xlab="czas")
+lines(t_btc,mod_btc5$fitted.values,col="red",lwd=2)
+ruchoma(cenaBTC, 2, "skyblue")
+wykladnicza(cenaBTC, 0.5, "pink")
+legend("topleft",legend=c("ruchoma","wykładnicza","model"),col=c("skyblue","pink","red"),lwd=2)
+
+plot(t_eth,cenaETH,main="Cena ETH",type="l",lwd=1,ylab="USD",xlab="czas")
+lines(t_eth,mod_eth5$fitted.values,col="red",lwd=2)
+ruchoma(cenaETH, 2, "seagreen")
+wykladnicza(cenaETH, 0.5, "pink")
+legend("topleft",legend=c("ruchoma","wykładnicza","model"),col=c("seagreen","pink","red"),lwd=2)
+```
+
+## Korelacje reszt
+
+$H_0$: korelacje nie występują
+
+```{r}
+Box.test(mod_btc5$residuals, type = "Ljung-Box")
+Box.test(mod_eth5$residuals, type = "Ljung-Box")
+```
+
+Na podstawie testu Ljunga - Boxa odrzucamy $H_0$. Korelacje występują.
+
+## Stacjonarność
+
+$H_0$: szereg jest stacjonarny
+
+```{r warning=FALSE}
+btc_kpss <- kpss.test(BTC)
+eth_kpss <- kpss.test(ETH)
+
+kpss <- matrix(c(btc_kpss$p.value, eth_kpss$p.value), ncol = 1, byrow = T)
+kpss <- data.frame(kpss)
+rownames(kpss) <- c("BTC", "ETH")
+colnames(kpss) <- c("Wartość p z testu KPSS")
+kable(kpss)
+```
+
+Odrzucamy $H_0$ na podstawie testu KPSS w obu przypadkach, szeregi są niestacjonarne.
+
+## Model ARIMA
+
+```{r}
+abtc <- auto.arima(cenaBTC)
+abtc
+```
+
+Dla `BTC` model ARIMA (0,1,0).
+$$\Delta E_r = e_t$$
+$$E_t \quad \tilde{} \quad N(0, 1315234)$$
+$e_t$ to biały szum o rozkładzie nomralnym. Wartości te są losowe i mają rozkład normalny o średniej 0 i wariancji 1315234.
+
+```{r}
+plot(cenaBTC, type='l',lwd=2)
+grid(col='skyblue',lty=3)
+title("Model ARIMA(0,1,0)")
+```
+
+
+```{r}
+aeth <- auto.arima(cenaETH)
+aeth
+```
+
+Dla `ETH` model ARIMA (2,1,2).
+
+$$\Delta E_r = -0.45 \cdot \Delta e_{t - 1} - 0.87 \cdot \Delta e_{t - 2} \cdot e_t - 0.39 \cdot e_{t - 1} - 86 \cdot e_{t - 2}$$
+
+$$E_t \quad \tilde{} \quad N(0, 8011)$$
+Wariancja zaburzeń zewnętrznych wynosi 8011.
+
+```{r}
+plot(cenaETH, type='l',lwd=2)
+grid(col='seagreen',lty=3)
+title("Model ARIMA(2, 1, 2)")
+```
+
