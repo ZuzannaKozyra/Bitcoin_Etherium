@@ -1,2 +1,2 @@
 # Bitcoin_Etherium
-Time series
+Time series of bitcoin and etherium prices
